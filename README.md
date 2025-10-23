@@ -1,193 +1,115 @@
-# LLM Chat Application Template
+# Cloudflare AI Chat
 
-A simple, ready-to-deploy chat application template powered by Cloudflare Workers AI. This template provides a clean starting point for building AI chat applications with streaming responses.
+An LLM-powered chat application built on [Cloudflare Workers](https://developers.cloudflare.com/workers/), [Workers AI](https://developers.cloudflare.com/workers-ai/), Durable Objects, and Vectorize.  It provides an experience similar to ChatGPT where users can open multiple conversation threads, switch among Workers AI models, upload reference documents, and see which snippets were used to ground each answer.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/templates/tree/main/cloudflare-ai-chat)
+## Highlights
 
-<!-- dash-content-start -->
+- **Multi-model chat** – switch between 80+ Workers AI models (Llama 3.3, Mistral, Qwen, etc.) from the header dropdown. Each conversation remembers its chosen model.
+- **Conversation sidebar** – create, rename, or delete chats; all chat state is persisted in a Durable Object per session.
+- **Document ingestion & RAG** – upload text, PDF, or image files. Content is chunked, embedded with Workers AI, and stored in a Vectorize index. Streaming responses list the exact snippets referenced.
+- **Attachment status & toasts** – the composer shows upload progress, chunk counts, and warnings when no text is extracted from a file.
+- **Error transparency** – explicit messages explain when a model is unavailable or a file contained no readable text.
 
-## Demo
+## Architecture
 
-This template demonstrates how to build an AI-powered chat interface using Cloudflare Workers AI with streaming responses. It features:
+```
+┌──────────┐        ┌──────────────────────┐        ┌─────────────────────┐
+│  Browser │──HTTP─▶│ Cloudflare Worker    │──AI──▶ │ Workers AI (LLM/Emb)│
+└──────────┘        │  • Routes /api/chat  │        └─────────────────────┘
+                     │  • Durable Objects   │                     │
+                     │  • Vectorize queries │◀────── embeddings ──┘
+                     └────────┬────────────┘
+                              │
+                       ┌──────▼──────┐
+                       │ Durable     │ stores per-session messages,
+                       │ Object      │ model selections & metadata
+                       └─────────────┘
+```
 
-- Real-time streaming of AI responses using Server-Sent Events (SSE)
-- Easy customization of models and system prompts
-- Support for AI Gateway integration
-- Clean, responsive UI that works on mobile and desktop
-
-## Features
-
-- 💬 ChatGPT-inspired, responsive chat interface with dark theme
-- ⚡ Server-Sent Events (SSE) for streaming responses
-- 🧠 Powered by Cloudflare Workers AI LLMs
-- 🛠️ Built with TypeScript and Cloudflare Workers
-- 📱 Mobile-friendly design
-- 🗂 Conversation history sidebar with quick session switching
-- 📎 Inline knowledge uploads with previews (text, PDF, image OCR)
-- 📚 Bring-your-own knowledge base via Cloudflare Vectorize
-- 🔄 Maintains chat history on the client
-- 🔎 Built-in Observability logging
-<!-- dash-content-end -->
+- **Worker** (`src/index.ts`) handles API routes, orchestrates model calls, streaming responses, and document ingestion.
+- **Durable Object** (`SessionDurableObject`) keeps chat history and the selected model ID for each session.
+- **Vectorize** stores document embeddings for retrieval-augmented responses.
+- **Static UI** (`public/`) is delivered via Workers Assets and implements the chat experience.
 
 ## Getting Started
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18 or newer)
-- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
-- A Cloudflare account with Workers AI access
-- Workers AI models enabled for:
-  - `@cf/meta/llama-3.3-70b-instruct-fp8-fast` (chat)
-  - `@cf/baai/bge-base-en-v1.5` (embeddings)
-  - `@cf/pdf/extract-text` (PDF text extraction)
-  - `@cf/tesseract-ocr` (image OCR)
-- A [Cloudflare Vectorize](https://developers.cloudflare.com/vectorize/) index (the sample configuration expects an index named `chat-knowledge`)
+- Node.js 18+
+- npm 9+
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/) (`npm install -g wrangler`)
+- A Cloudflare account with Workers, Workers AI, Durable Objects, and Vectorize enabled
 
-### Installation
+### Install dependencies
 
-1. Clone this repository:
+```bash
+npm install
+```
 
-   ```bash
-   git clone https://github.com/cloudflare/templates.git
-   cd templates/llm-chat-app
-   ```
+### Configure Wrangler
 
-2. Install dependencies:
+Update [`wrangler.jsonc`](wrangler.jsonc) with your account ID and bindings if they differ:
 
-   ```bash
-   npm install
-   ```
+```jsonc
+{
+  "name": "cloudflare-ai-chat",
+  "main": "src/index.ts",
+  "durable_objects": { "bindings": [{ "name": "SESSIONS", "class_name": "SessionDurableObject" }] },
+  "vectorize": [{ "binding": "VECTORIZE", "index_name": "chat-knowledge" }],
+  "ai": { "binding": "AI" }
+}
+```
 
-3. Generate Worker type definitions:
-   ```bash
-   npm run cf-typegen
-   ```
+Create the necessary Durable Object migration once:
 
-### Development
+```bash
+npx wrangler deploy --migrations
+```
 
-Start a local development server:
+Create the Vectorize index if you have not already:
+
+```bash
+npx wrangler vectorize create chat-knowledge --dimensions 1024 --metric cosine
+```
+
+### Local development
 
 ```bash
 npm run dev
 ```
 
-This will start a local server at http://localhost:8787.
+This serves the app at http://localhost:8787 using live Workers AI calls.
 
-Note: Using Workers AI accesses your Cloudflare account even during local development, which will incur usage charges.
-
-### Deployment
-
-Deploy to Cloudflare Workers:
+### Deploy
 
 ```bash
-npx wrangler deploy --migrations  # first deploy to register Durable Object
-npm run deploy
+npx wrangler deploy
 ```
 
-### Monitor
+## Usage
 
-View real-time logs associated with any deployed Worker:
+1. Open the deployed URL and click **+ New Chat** or select an existing conversation from the sidebar.
+2. Choose a model from the **Model** dropdown.  The list comes from [`public/models.json`](public/models.json) and covers the Workers AI catalog; add or remove entries as you see fit.
+3. Send messages as usual.  Streaming responses show the snippets retrieved from Vectorize at the start of each answer.
+4. Upload documents via the paperclip button.  The status chip reflects progress (`Uploading…`, `Indexed`, or `No text extracted`).  A toast summarizes how many chunks were stored.
+5. Use the ✕ icon beside a conversation to delete it (Durable Object state is cleared and the local sidebar updates).
 
-```bash
-npm wrangler tail
-```
+## Document ingestion details
 
-## Project Structure
+- Text & Markdown files are read as-is.
+- PDFs are processed via Workers AI `@cf/pdf/extract-text`.
+- Images use a fallback sequence of `@cf/unum/uform-gen2-qwen-500m` then `@cf/llava/llava-1.5-7b-hf`.  If no text can be extracted, the upload is rejected with a descriptive message.
+- Plain text chunks are embedded with `@cf/baai/bge-base-en-v1.5` and stored in the Vectorize index.
 
-```
-/
-├── public/             # Static assets
-│   ├── index.html      # Chat UI HTML
-│   └── chat.js         # Chat UI frontend script
-├── src/
-│   ├── index.ts        # Main Worker entry point
-│   └── types.ts        # TypeScript type definitions
-├── test/               # Test files
-├── wrangler.jsonc      # Cloudflare Worker configuration
-├── tsconfig.json       # TypeScript configuration
-└── README.md           # This documentation
-```
+## Limitations & future ideas
 
-## How It Works
+- Image OCR quality depends on open-source vision models; ambiguous or stylized text may require manual transcription.
+- Rate limits follow Workers Free (10k Neurons/day).  Consider adding AI Gateway for more control in production scenarios.
+- Possible extensions: switch to a stronger external OCR provider, add auth, provide analytics dashboards, or integrate Workflows for long-running jobs.
 
-### Backend
+## Credits
 
-The backend is built with Cloudflare Workers and uses the Workers AI platform to generate responses. The main components are:
+- Inspired by the official Cloudflare [LLM Chat App template](https://github.com/cloudflare/templates/tree/main/llm-chat-app-template).
+- UI built from scratch with vanilla HTML/CSS/JS for minimal dependency overhead.
 
-1. **API Endpoint** (`/api/chat`): Accepts POST requests with chat messages and streams responses
-2. **Streaming**: Uses Server-Sent Events (SSE) for real-time streaming of AI responses
-3. **Workers AI Binding**: Connects to Cloudflare's AI service via the Workers AI binding
-4. **Durable Object Memory**: Persists per-session chat history so conversations remain contextual
-5. **Retrieval-Augmented Generation**: Embeds uploaded documents with `@cf/baai/bge-base-en-v1.5`, stores vectors in Cloudflare Vectorize, and prepends the most relevant snippets to each model call
-
-### Frontend
-
-The frontend is a simple HTML/CSS/JavaScript application that:
-
-1. Presents a chat interface
-2. Sends user messages to the API
-3. Processes streaming responses in real-time
-4. Maintains chat history on the client side
-5. Lets users upload or paste documents and shows which snippets were used to ground the latest answer
-6. Surfaces upload confirmations inline so the conversation stays in context
-
-## Knowledge Grounding
-
-- Upload reference material with `POST /api/docs` using raw text or files. The Worker will:
-  - Accept `.txt`, `.md`, `.json`, `.csv`, and similar text files directly.
-  - Run `@cf/pdf/extract-text` against uploaded PDFs.
-  - Run `@cf/tesseract-ocr` against PNG/JPG images to pull out text.
-- After extraction the content is chunked, embedded, and stored in the configured Vectorize index.
-- When chatting, the Worker embeds each question, retrieves the top matches from Vectorize, and streams the context list to the client before the model's tokens arrive.
-- Each assistant response in the chat lists the snippets it grounded on, so users can verify provenance without leaving the conversation.
-
-## Model Selection
-
-- Use the **Model** dropdown in the top-right corner to pick which Workers AI model powers the current conversation. Each new chat starts with Llama 3.3 70B (fast) by default.
-- The choice is remembered per conversation and synced across reloads. Switching to another chat automatically restores its saved model.
-- The dropdown is populated from `public/models.json` (currently mirroring the 80+ Workers AI models). Add or modify entries there to control what appears, or type/load a custom ID to fall back to the “Custom” option.
-
-### Setting up Vectorize
-
-1. Create an index (for example via the CLI):
-
-   ```bash
-   npx wrangler vectorize create chat-knowledge --dimensions 768 --metric cosine
-   ```
-
-2. Ensure the index name matches the binding in `wrangler.jsonc`.
-
-## Customization
-
-### Changing the Model
-
-To use a different AI model, update the `MODEL_ID` constant in `src/index.ts`. You can find available models in the [Cloudflare Workers AI documentation](https://developers.cloudflare.com/workers-ai/models/).
-
-### Using AI Gateway
-
-The template includes commented code for AI Gateway integration, which provides additional capabilities like rate limiting, caching, and analytics.
-
-To enable AI Gateway:
-
-1. [Create an AI Gateway](https://dash.cloudflare.com/?to=/:account/ai/ai-gateway) in your Cloudflare dashboard
-2. Uncomment the gateway configuration in `src/index.ts`
-3. Replace `YOUR_GATEWAY_ID` with your actual AI Gateway ID
-4. Configure other gateway options as needed:
-   - `skipCache`: Set to `true` to bypass gateway caching
-   - `cacheTtl`: Set the cache time-to-live in seconds
-
-Learn more about [AI Gateway](https://developers.cloudflare.com/ai-gateway/).
-
-### Modifying the System Prompt
-
-The default system prompt can be changed by updating the `SYSTEM_PROMPT` constant in `src/index.ts`.
-
-### Styling
-
-The UI styling is contained in the `<style>` section of `public/index.html`. You can modify the CSS variables at the top to quickly change the color scheme.
-
-## Resources
-
-- [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
-- [Cloudflare Workers AI Documentation](https://developers.cloudflare.com/workers-ai/)
-- [Workers AI Models](https://developers.cloudflare.com/workers-ai/models/)
+Happy building!
